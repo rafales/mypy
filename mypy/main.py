@@ -70,6 +70,7 @@ def main(script_path: Optional[str], args: Optional[List[str]] = None) -> None:
 
     fscache = FileSystemCache()
     sources, options = process_options(args, fscache=fscache)
+    # print(sources)
 
     messages = []
 

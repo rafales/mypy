@@ -4,7 +4,7 @@ import os.path
 
 from typing import List, Sequence, Set, Tuple, Optional, Dict
 
-from mypy.modulefinder import BuildSource, PYTHON_EXTENSIONS
+from mypy.modulefinder import BuildSource, PYTHON_EXTENSIONS, get_site_packages_dirs
 from mypy.fscache import FileSystemCache
 from mypy.options import Options
 
@@ -27,7 +27,7 @@ def create_source_list(files: Sequence[str], options: Options,
     Raises InvalidSourceList on errors.
     """
     fscache = fscache or FileSystemCache()
-    finder = SourceFinder(fscache)
+    finder = SourceFinder(fscache, options)
 
     targets = []
     for f in files:
@@ -60,22 +60,26 @@ def keyfunc(name: str) -> Tuple[int, str]:
 
 
 class SourceFinder:
-    def __init__(self, fscache: FileSystemCache) -> None:
+    def __init__(self, fscache: FileSystemCache, options: Options) -> None:
         self.fscache = fscache
         # A cache for package names, mapping from directory path to module id and base dir
         self.package_cache = {}  # type: Dict[str, Tuple[str, str]]
+        self.namespace_packages = options.namespace_packages
+        # TODO use SearchPaths instead of using get_site_packages_dirs() directly
+        self.source_roots: List[str] = sum(get_site_packages_dirs(options.python_executable), [])
 
     def expand_dir(self, arg: str, mod_prefix: str = '') -> List[BuildSource]:
         """Convert a directory name to a list of sources to build."""
         f = self.get_init_file(arg)
-        if mod_prefix and not f:
+        is_pkg = self.is_package(arg)
+        if mod_prefix and not is_pkg:
             return []
         seen = set()  # type: Set[str]
         sources = []
         top_mod, base_dir = self.crawl_up_dir(arg)
-        if f and not mod_prefix:
+        if is_pkg and not mod_prefix:
             mod_prefix = top_mod + '.'
-        if mod_prefix:
+        if mod_prefix and f:
             sources.append(BuildSource(f, mod_prefix.rstrip('.'), None, base_dir))
         names = self.fscache.listdir(arg)
         names.sort(key=keyfunc)
@@ -117,6 +121,15 @@ class SourceFinder:
 
         return mod, base_dir
 
+    def is_package(self, dir: str) -> bool:
+        if self.namespace_packages:
+            abs_dir = os.path.abspath(dir)
+            for source_root in self.source_roots:
+                if abs_dir.startswith(f'{source_root}/'):
+                    return True
+
+        return bool(self.get_init_file(dir))
+
     def crawl_up_dir(self, dir: str) -> Tuple[str, str]:
         """Given a directory name, return the corresponding module name and base directory
 
@@ -126,7 +139,8 @@ class SourceFinder:
             return self.package_cache[dir]
 
         parent_dir, base = os.path.split(dir)
-        if not dir or not self.get_init_file(dir) or not base:
+
+        if not dir or not self.is_package(dir) or not base:
             res = ''
             base_dir = dir or '.'
         else:
